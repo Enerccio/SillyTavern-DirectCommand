@@ -27,10 +27,10 @@ class DirectCommand {
                 message.content = "";
             }
             if (this.prefix) {
-                message.content = `[${this.prefix}]\n` + message.content;
+                message.content = `${this.prefix}\n` + message.content;
             }
             if (this.postfix) {
-                message.content += `\n[${this.postfix}]\n`;
+                message.content += `\n${this.postfix}\n`;
             }
         }
     }
@@ -48,47 +48,84 @@ class DirectCommandManager {
         this.appendCurrentPrompt = false;
 
         this.$chat = $("#chat");
-        this.$leftButtons = $("#leftSendForm");
         this.$sendButton = $("#send_but");
         this.$openButton = null;
     }
 
     async wire() {
-        this.$openButton = $(`<div id="${MODULE_NAME}_editCurrentPrompt" style="display: flex;" class="fa-solid fa-robot interactable" title="Direct Command" data-i18n="[title]Direct Command" tabindex="0"></div>`);
-        // TODO: Append this.$openButton to $leftButtons and add wiring to it - call this._editCurrentPrompt
+        if ($(`#${MODULE_NAME}_editCurrentPrompt`).length > 0) return;
 
-        // TODO: add logic to $sendButton, if it has fa-paper-plane and interactable as styles, bind this._saveCurrentPrompt
+        this.$openButton = $(`<div id="${MODULE_NAME}_editCurrentPrompt" style="display: flex;" class="fa-solid fa-robot interactable ${MODULE_NAME}_button_container" title="Direct Command" data-i18n="[title]Direct Command" tabindex="0"></div>`);
+        this.$openButton.insertAfter('#extensionsMenuButton');
+        this.$openButton.on('click', () => {
+            this._editCurrentPrompt();
+        });
+
+        this.$sendButton.on('click', () => {
+            if (this.$sendButton.hasClass('fa-paper-plane') && this.$sendButton.hasClass('interactable')) {
+                const $popup = $(`.${MODULE_NAME}_global_popup`);
+                if ($popup.length) {
+                    const pre = $popup.find(`.${MODULE_NAME}_prepend`).val();
+                    const post = $popup.find(`.${MODULE_NAME}_append`).val();
+                    this._saveCurrentPrompt(pre, post);
+                    $popup.remove();
+                }
+            }
+        });
     }
 
-    async processUserMessage(index) {
+    async storeDirectCommand(index) {
         const context = SillyTavern.getContext();
         const message = context.chat[index];
         if (this.appendCurrentPrompt && index === context.chat.length - 1) {
             // new submitted message, bind prompt to it if it was edited
             if (this.appendCurrentPrompt) {
-
+                this._setDirectCommand(message, this.currentPrompt);
                 this.appendCurrentPrompt = false;
                 this.currentPrompt = new DirectCommand();
+                setChatMetadata(DirectCommandManager.PROMPT_COMMAND_APPEND, this.appendCurrentPrompt, false);
+                setChatMetadata(DirectCommandManager.PROMPT_COMMAND, this.currentPrompt.toJson(), true);
+                await this.processUserMessage(index);
             }
-        } else {
-            if (message && message.is_user) {
-                const command = this._getDirectCommand(message);
-                const messageDiv = getMessageDiv(index);
-                if (messageDiv) {
-                    const $characterName = messageDiv.find('ch_name > :first_child > :first_child');
-                    if ($characterName) {
-                        if (command) {
-                            // TODO: Append button to edit fa-solid fa-robot button to $characterName and wire click logic to this._editPrompt with that button
-                        } else {
-                            // TODO: Check and remove button to edit
+        }
+    }
+
+    async processUserMessage(index) {
+        const context = SillyTavern.getContext();
+        const message = context.chat[index];
+
+        if (message && message.is_user) {
+            const command = this._getDirectCommand(message);
+            const messageDiv = getMessageDiv(index);
+            if (messageDiv) {
+                let $characterName = messageDiv.find('.ch_name > :first-child > :first-child').first();
+                if ($characterName.length === 0) {
+                    $characterName = messageDiv.find('ch_name').first();
+                }
+                if ($characterName.length > 0) {
+                    const editBtnClass = `${MODULE_NAME}_edit_btn`;
+                    let $editBtn = $characterName.find(`.${editBtnClass}`);
+                    if (command) {
+                        if ($editBtn.length === 0) {
+                            $editBtn = $(`<span class="${editBtnClass} fa-solid fa-robot interactable" style="margin-left: 8px; cursor: pointer;" title="Edit Direct Command"></span>`);
+                            $characterName.append($editBtn);
+                            $editBtn.on('click', (e) => {
+                                e.stopPropagation();
+                                this._editPrompt($editBtn, command);
+                            });
                         }
+                    } else {
+                        $editBtn.remove();
                     }
                 }
             }
         }
     }
 
-    onChatRefresh() {
+    async onChatRefresh() {
+        $(`.${MODULE_NAME}_container`).remove();
+        $(`.${MODULE_NAME}_confirm_container`).remove();
+
         const currentPrompt = getChatMetadata(DirectCommandManager.PROMPT_COMMAND, true);
         if (currentPrompt) {
             this.currentPrompt = DirectCommand.fromJson(currentPrompt);
@@ -96,40 +133,176 @@ class DirectCommandManager {
             this.currentPrompt = new DirectCommand();
         }
         this.appendCurrentPrompt = getChatMetadata(DirectCommandManager.PROMPT_COMMAND_APPEND, false);
+
+        const context = SillyTavern.getContext();
+        for (let i = 0; i < context.chat.length; i++) {
+            await manager.processUserMessage(i);
+        }
     }
 
     processPrompt(data) {
         const context = SillyTavern.getContext();
         for (let i = data.chat.length - 1; i >= 0; i--) {
             if (data.chat[i].role === 'user') {
-                if (context.chat[i]) {
-                    const prompt = this._getDirectCommand(context.chat[i]);
-                    if (prompt) {
-                        prompt.applyTo(context.chat[i]);
+                // find first chat message
+                for (let j = context.chat.length - 1; j >= 0; j--) {
+                    const m = context.chat[j];
+                    if (m && m.is_user) {
+                        const prompt = this._getDirectCommand(m);
+                        if (prompt) {
+                            prompt.applyTo(data.chat[i]);
+                        }
+                        return;
                     }
-                    return;
                 }
+                return;
             }
         }
     }
 
     async _editCurrentPrompt() {
-        const $template = await this._loadTemplate();
-        // TODO: Bind template fields to this.currentPrompt
-        // TODO: Bind template save button to this._saveCurrentPrompt
+        const existingPopup = this.$openButton.data('popup');
+        if (existingPopup && existingPopup.parent().length) {
+            if (this._hasChanges(existingPopup, this.currentPrompt)) {
+                this._showConfirmPopup((action) => {
+                    if (action === 'save') {
+                        const pre = existingPopup.find(`.${MODULE_NAME}_prepend`).val();
+                        const post = existingPopup.find(`.${MODULE_NAME}_append`).val();
+                        this._saveCurrentPrompt(pre, post);
+                        existingPopup.remove();
+                        this.$openButton.data('popup', null);
+                    } else if (action === 'discard') {
+                        existingPopup.remove();
+                        this.$openButton.data('popup', null);
+                    }
+                });
+            } else {
+                existingPopup.remove();
+                this.$openButton.data('popup', null);
+            }
+            return;
+        }
 
-        // TODO: Display template to the top of the this.$openButton, higher zindex, width should be calculated based
-        //  on position of start of <this.$openButton left offset from start of webpage>
-        //  width should be (this.$chat width - (<this.$openButton left offset from start of webpage> - <this.$chat left offset from start of webpage>)
+        $(`.${MODULE_NAME}_global_popup`).remove();
+
+        const $template = await this._loadTemplate();
+        $template.addClass(`${MODULE_NAME}_global_popup`);
+
+        const prefixArea = $template.find(`.${MODULE_NAME}_prepend`);
+        const postfixArea = $template.find(`.${MODULE_NAME}_append`);
+        prefixArea.val(this.currentPrompt.prefix || "");
+        postfixArea.val(this.currentPrompt.postfix || "");
+
+        $template.find(`.${MODULE_NAME}_save`).on('click', () => {
+            const pre = prefixArea.val();
+            const post = postfixArea.val();
+            this._saveCurrentPrompt(pre, post);
+            $template.remove();
+            this.$openButton.data('popup', null);
+        });
+
+        const chatLeft = this.$chat.offset().left;
+        const openLeft = this.$openButton.offset().left;
+        const chatWidth = this.$chat.outerWidth();
+        const width = chatWidth - (openLeft - chatLeft);
+        const bottom = $(window).height() - this.$openButton.offset().top;
+
+        $template.css({
+            position: 'fixed',
+            left: `${openLeft}px`,
+            bottom: `${bottom}px`,
+            width: `${width}px`,
+            zIndex: 10000
+        });
+
+        this.$openButton.data('popup', $template);
+        $('body').append($template);
     }
 
     async _editPrompt($button, prompt) {
+        const existingPopup = $button.data('popup');
+        if (existingPopup && existingPopup.parent().length) {
+            if (this._hasChanges(existingPopup, prompt)) {
+                this._showConfirmPopup((action) => {
+                    if (action === 'save') {
+                        const index = parseInt($button.closest('[mesid]').attr('mesid'));
+                        prompt.prefix = existingPopup.find(`.${MODULE_NAME}_prepend`).val();
+                        prompt.postfix = existingPopup.find(`.${MODULE_NAME}_append`).val();
+                        this._savePrompt(index, prompt);
+                        existingPopup.remove();
+                        $button.data('popup', null);
+                    } else if (action === 'discard') {
+                        existingPopup.remove();
+                        $button.data('popup', null);
+                    }
+                });
+            } else {
+                existingPopup.remove();
+                $button.data('popup', null);
+            }
+            return;
+        }
+
+        const index = parseInt($button.closest('[mesid]').attr('mesid'));
+        if (isNaN(index)) return;
+
         const $template = await this._loadTemplate();
-        // TODO: Bind template fields to prompt
-        // TODO: Bind template save button to this._savePrompt
-        // TODO: Display template to the bottom of the $button, higher zindex, width should be calculated based
-        //  on position of start of <$button left offset from start of webpage>
-        //  width should be (this.$chat width - (<$button left offset from start of webpage> - <this.$chat left offset from start of webpage>)
+
+        const prefixArea = $template.find(`.${MODULE_NAME}_prepend`);
+        const postfixArea = $template.find(`.${MODULE_NAME}_append`);
+        prefixArea.val(prompt.prefix || "");
+        postfixArea.val(prompt.postfix || "");
+
+        $template.find(`.${MODULE_NAME}_save`).on('click', () => {
+            prompt.prefix = prefixArea.val();
+            prompt.postfix = postfixArea.val();
+            this._savePrompt(index, prompt);
+            $template.remove();
+            $button.data('popup', null);
+        });
+
+        // --- Dynamic Alignment to $chat Boundaries ---
+        const chatLeft = this.$chat.offset().left;
+        const chatWidth = this.$chat.outerWidth();
+        const btnTop = $button.offset().top;
+        const btnHeight = $button.outerHeight();
+
+        // Force the popup to perfectly align flush with the main chat stream window
+        const finalLeft = chatLeft;
+        const finalWidth = chatWidth;
+
+        // 1. Stage the component invisibly to compute accurate textwrapping heights
+        $template.css({
+            position: 'fixed',
+            left: `${finalLeft}px`,
+            width: `${finalWidth}px`,
+            zIndex: 10000,
+            visibility: 'hidden'
+        });
+
+        $button.data('popup', $template);
+        $('body').append($template);
+
+        // 2. Measure actual computed bounding box height
+        const popupHeight = $template.outerHeight();
+        const windowHeight = window.innerHeight;
+        const spaceBelow = windowHeight - (btnTop + btnHeight);
+
+        // 3. Compute Vertical Trajectory relative to the clicked button icon
+        let finalTop;
+        if (spaceBelow < popupHeight && btnTop >= popupHeight) {
+            // VERTICAL FLIP: Open upwards if there's no room below
+            finalTop = btnTop - popupHeight;
+        } else {
+            // Normal Trajectory: Open downwards directly underneath the name line
+            finalTop = btnTop + btnHeight;
+        }
+
+        // 4. Snap coordinates and reveal panel seamlessly
+        $template.css({
+            top: `${finalTop}px`,
+            visibility: 'visible'
+        });
     }
 
     _saveCurrentPrompt(pre, post) {
@@ -150,7 +323,7 @@ class DirectCommandManager {
                 const context = SillyTavern.getContext();
                 const message = context.chat[index];
                 if (message) {
-                    this._setDirectCommand(command, message);
+                    this._setDirectCommand(message, command);
                 }
             } else {
                 setChatMetadata(DirectCommandManager.PROMPT_COMMAND, command.toJson(), true);
@@ -175,21 +348,60 @@ class DirectCommandManager {
     async _loadTemplate() {
         return $(await renderExtensionTemplateAsync(EXTENSION_PATH, 'directcommand'))
     }
+
+    _hasChanges($popup, originalPrompt) {
+        const pre = $popup.find(`.${MODULE_NAME}_prepend`).val() || "";
+        const post = $popup.find(`.${MODULE_NAME}_append`).val() || "";
+        return pre !== (originalPrompt.prefix || "") || post !== (originalPrompt.postfix || "");
+    }
+
+    _showConfirmPopup(callback) {
+        const confirmHtml = `
+            <div class="${MODULE_NAME}_confirm_container">
+                <div class="${MODULE_NAME}_confirm_message">You have unsaved changes. Do you want to save them?</div>
+                <div class="${MODULE_NAME}_confirm_buttons">
+                    <button class="${MODULE_NAME}_confirm_btn ${MODULE_NAME}_confirm_save menu_button">Save</button>
+                    <button class="${MODULE_NAME}_confirm_btn ${MODULE_NAME}_confirm_discard menu_button red_button">Discard</button>
+                    <button class="${MODULE_NAME}_confirm_btn ${MODULE_NAME}_confirm_cancel menu_button">Cancel</button>
+                </div>
+            </div>
+        `;
+        const $confirm = $(confirmHtml);
+        $confirm.find(`.${MODULE_NAME}_confirm_save`).on('click', () => {
+            callback('save');
+            $confirm.remove();
+        });
+        $confirm.find(`.${MODULE_NAME}_confirm_discard`).on('click', () => {
+            callback('discard');
+            $confirm.remove();
+        });
+        $confirm.find(`.${MODULE_NAME}_confirm_cancel`).on('click', () => {
+            callback('cancel');
+            $confirm.remove();
+        });
+        $('body').append($confirm);
+    }
 }
 
 let manager = null;
 
 $(async function () {
     manager = new DirectCommandManager();
-    await manager.wire();
+    for (let event of [event_types.APP_INITIALIZED, event_types.CHAT_CHANGED]) {
+        eventSource.on(event, async () => {
+            await manager.wire();
+        });
+    }
 
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, async (data) => {
         manager.processPrompt(data);
     });
     eventSource.on(event_types.USER_MESSAGE_RENDERED, async (messageId) => {
-        await manager.processUserMessage(messageId);
+        await manager.storeDirectCommand(messageId);
     });
-    for (let event of [event_types.CHAT_LOADED, event_types.CHAT_CHANGED]) {
-        manager.onChatRefresh();
+    for (let event of [event_types.CHAT_LOADED]) {
+        eventSource.on(event, async () => {
+            await manager.onChatRefresh();
+        });
     }
 });

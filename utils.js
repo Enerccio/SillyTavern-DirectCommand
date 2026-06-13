@@ -1,5 +1,4 @@
-import {EXTENSION_NAME} from "./conf.js";
-import {MODULE_NAME} from "/scripts/extensions/third-party/SillyTavern-StickyNote/conf.js";
+import {EXTENSION_NAME, MODULE_NAME} from "./conf.js";
 import {chat_metadata, saveChatDebounced} from "/script.js";
 import {saveMetadataDebounced} from "/scripts/extensions.js";
 
