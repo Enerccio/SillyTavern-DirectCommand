@@ -55,6 +55,8 @@ class DirectCommandManager {
     async wire() {
         if ($(`#${MODULE_NAME}_editCurrentPrompt`).length > 0) return;
 
+        this._updateButtonState();
+
         this.$openButton = $(`<div id="${MODULE_NAME}_editCurrentPrompt" style="display: flex;" class="fa-solid fa-robot interactable ${MODULE_NAME}_button_container" title="Direct Command" data-i18n="[title]Direct Command" tabindex="0"></div>`);
         this.$openButton.insertAfter('#extensionsMenuButton');
         this.$openButton.on('click', () => {
@@ -85,6 +87,7 @@ class DirectCommandManager {
             this.currentPrompt.prefix = pre;
             this.currentPrompt.postfix = post;
             this.appendCurrentPrompt = true;
+            this._updateButtonState();
             $popup.remove();
             if (this.$openButton) {
                 this.$openButton.data('popup', null);
@@ -96,6 +99,7 @@ class DirectCommandManager {
             this._setDirectCommand(message, this.currentPrompt);
             this.appendCurrentPrompt = false;
             this.currentPrompt = new DirectCommand();
+            this._updateButtonState();
             setChatMetadata(DirectCommandManager.PROMPT_COMMAND_APPEND, this.appendCurrentPrompt, false);
             setChatMetadata(DirectCommandManager.PROMPT_COMMAND, this.currentPrompt.toJson(), true);
             await this.processUserMessage(index);
@@ -145,6 +149,8 @@ class DirectCommandManager {
             this.currentPrompt = new DirectCommand();
         }
         this.appendCurrentPrompt = getChatMetadata(DirectCommandManager.PROMPT_COMMAND_APPEND, false);
+
+        this._updateButtonState();
 
         const context = SillyTavern.getContext();
         for (let i = 0; i < context.chat.length; i++) {
@@ -256,6 +262,26 @@ class DirectCommandManager {
             this.$openButton.data('popup', null);
         });
 
+        $template.find(`.${MODULE_NAME}_close`).on('click', () => {
+            if (this._hasChanges($template, this.currentPrompt)) {
+                this._showConfirmPopup((action) => {
+                    if (action === 'save') {
+                        const pre = $template.find(`.${MODULE_NAME}_prepend`).val();
+                        const post = $template.find(`.${MODULE_NAME}_append`).val();
+                        this._saveCurrentPrompt(pre, post);
+                        $template.remove();
+                        this.$openButton.data('popup', null);
+                    } else if (action === 'discard') {
+                        $template.remove();
+                        this.$openButton.data('popup', null);
+                    }
+                });
+            } else {
+                $template.remove();
+                this.$openButton.data('popup', null);
+            }
+        });
+
         const chatLeft = this.$chat.offset().left;
         const openLeft = this.$openButton.offset().left;
         const chatWidth = this.$chat.outerWidth();
@@ -316,6 +342,26 @@ class DirectCommandManager {
             $button.data('popup', null);
         });
 
+        $template.find(`.${MODULE_NAME}_close`).on('click', () => {
+            if (this._hasChanges($template, prompt)) {
+                this._showConfirmPopup((action) => {
+                    if (action === 'save') {
+                        prompt.prefix = $template.find(`.${MODULE_NAME}_prepend`).val();
+                        prompt.postfix = $template.find(`.${MODULE_NAME}_append`).val();
+                        this._savePrompt(index, prompt);
+                        $template.remove();
+                        $button.data('popup', null);
+                    } else if (action === 'discard') {
+                        $template.remove();
+                        $button.data('popup', null);
+                    }
+                });
+            } else {
+                $template.remove();
+                $button.data('popup', null);
+            }
+        });
+
         // --- Dynamic Alignment to $chat Boundaries ---
         const chatLeft = this.$chat.offset().left;
         const chatWidth = this.$chat.outerWidth();
@@ -366,6 +412,7 @@ class DirectCommandManager {
         this.currentPrompt.postfix = post;
         this._save(this.currentPrompt);
         setChatMetadata(DirectCommandManager.PROMPT_COMMAND_APPEND, this.appendCurrentPrompt, false);
+        this._updateButtonState();
     }
 
     _savePrompt(index, prompt) {
@@ -435,6 +482,16 @@ class DirectCommandManager {
             $confirm.remove();
         });
         $('body').append($confirm);
+    }
+
+    _updateButtonState() {
+        if (!this.$openButton) return;
+        if (this.currentPrompt.prefix || this.currentPrompt.postfix) {
+            // Uses SillyTavern's active theme accent color for quote highlights with a emerald fallback
+            this.$openButton.css('color', 'var(--SmartThemeQuoteColor, #00bc8c)');
+        } else {
+            this.$openButton.css('color', ''); // Revert to default theme icon color
+        }
     }
 }
 
