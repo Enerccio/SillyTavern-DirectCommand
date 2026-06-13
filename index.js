@@ -26,11 +26,11 @@ class DirectCommand {
             if (!message.content) {
                 message.content = "";
             }
-            if (this.prefix) {
+            if (this.prefix && !message.content.startsWith(`${this.prefix}\n`)) {
                 message.content = `${this.prefix}\n` + message.content;
             }
-            if (this.postfix) {
-                message.content += `\n${this.postfix}\n`;
+            if (this.postfix && !message.content.endsWith(`\n${this.postfix}\n`)) {
+                message.content = message.content + `\n${this.postfix}\n`;
             }
         }
     }
@@ -77,16 +77,28 @@ class DirectCommandManager {
     async storeDirectCommand(index) {
         const context = SillyTavern.getContext();
         const message = context.chat[index];
+
+        const $popup = $(`.${MODULE_NAME}_global_popup`);
+        if ($popup.length) {
+            const pre = $popup.find(`.${MODULE_NAME}_prepend`).val();
+            const post = $popup.find(`.${MODULE_NAME}_append`).val();
+            this.currentPrompt.prefix = pre;
+            this.currentPrompt.postfix = post;
+            this.appendCurrentPrompt = true;
+            $popup.remove();
+            if (this.$openButton) {
+                this.$openButton.data('popup', null);
+            }
+        }
+
         if (this.appendCurrentPrompt && index === context.chat.length - 1) {
             // new submitted message, bind prompt to it if it was edited
-            if (this.appendCurrentPrompt) {
-                this._setDirectCommand(message, this.currentPrompt);
-                this.appendCurrentPrompt = false;
-                this.currentPrompt = new DirectCommand();
-                setChatMetadata(DirectCommandManager.PROMPT_COMMAND_APPEND, this.appendCurrentPrompt, false);
-                setChatMetadata(DirectCommandManager.PROMPT_COMMAND, this.currentPrompt.toJson(), true);
-                await this.processUserMessage(index);
-            }
+            this._setDirectCommand(message, this.currentPrompt);
+            this.appendCurrentPrompt = false;
+            this.currentPrompt = new DirectCommand();
+            setChatMetadata(DirectCommandManager.PROMPT_COMMAND_APPEND, this.appendCurrentPrompt, false);
+            setChatMetadata(DirectCommandManager.PROMPT_COMMAND, this.currentPrompt.toJson(), true);
+            await this.processUserMessage(index);
         }
     }
 
@@ -100,7 +112,7 @@ class DirectCommandManager {
             if (messageDiv) {
                 let $characterName = messageDiv.find('.ch_name > :first-child > :first-child').first();
                 if ($characterName.length === 0) {
-                    $characterName = messageDiv.find('ch_name').first();
+                    $characterName = messageDiv.find('.ch_name').first();
                 }
                 if ($characterName.length > 0) {
                     const editBtnClass = `${MODULE_NAME}_edit_btn`;
@@ -142,20 +154,63 @@ class DirectCommandManager {
 
     processPrompt(data) {
         const context = SillyTavern.getContext();
+        if (!context.chat || context.chat.length === 0) return;
+
+        // 1. Find the latest core message (user or assistant) in the outgoing prompt payload
+        let lastCoreDataMessage = null;
         for (let i = data.chat.length - 1; i >= 0; i--) {
-            if (data.chat[i].role === 'user') {
-                // find first chat message
-                for (let j = context.chat.length - 1; j >= 0; j--) {
-                    const m = context.chat[j];
-                    if (m && m.is_user) {
-                        const prompt = this._getDirectCommand(m);
-                        if (prompt) {
-                            prompt.applyTo(data.chat[i]);
-                        }
-                        return;
-                    }
+            const role = data.chat[i]?.role;
+            // Explicitly ignore 'tool' and 'system' payload layers
+            if (role === 'user' || role === 'assistant') {
+                lastCoreDataMessage = data.chat[i];
+                break;
+            }
+        }
+
+        // If the last core turn isn't a user message, it's a continuation or multi-bot response. Skip it.
+        if (!lastCoreDataMessage || lastCoreDataMessage.role !== 'user') return;
+
+        // 2. Find the core conversation messages at the tail end of full chat history
+        // We skip system messages and tool entries to get a clean user/assistant timeline.
+        let coreContextMessages = [];
+        for (let j = context.chat.length - 1; j >= 0; j--) {
+            const m = context.chat[j];
+            if (!m) continue;
+
+            const isSystem = m.is_system === true;
+            const isTool = m.extra?.role === 'tool' || m.extra?.is_tool === true || m.extra?.type === 'tool';
+
+            if (!isSystem && !isTool) {
+                coreContextMessages.push(m);
+                // We only need the last two core messages to evaluate Normal Send vs Swipe
+                if (coreContextMessages.length >= 2) break;
+            }
+        }
+
+        if (coreContextMessages.length === 0) return;
+
+        let targetUserMessage = null;
+        const latestContextMessage = coreContextMessages[0];
+
+        if (latestContextMessage.is_user === true) {
+            // Case A: Normal Send. The user message is at the active edge of the conversation.
+            targetUserMessage = latestContextMessage;
+        } else {
+            // Case B: Swipe. The core timeline ends with the AI turn being regenerated.
+            // The user message that triggered it sits directly behind it.
+            if (coreContextMessages.length >= 2) {
+                const penultimateContextMessage = coreContextMessages[1];
+                if (penultimateContextMessage && penultimateContextMessage.is_user === true) {
+                    targetUserMessage = penultimateContextMessage;
                 }
-                return;
+            }
+        }
+
+        // 3. Inject the command strictly into the current outgoing user turn payload
+        if (targetUserMessage) {
+            const prompt = this._getDirectCommand(targetUserMessage);
+            if (prompt) {
+                prompt.applyTo(lastCoreDataMessage);
             }
         }
     }
@@ -319,7 +374,7 @@ class DirectCommandManager {
 
     _save(command, index = undefined) {
         if (command) {
-            if (index) {
+            if (index !== undefined) {
                 const context = SillyTavern.getContext();
                 const message = context.chat[index];
                 if (message) {
