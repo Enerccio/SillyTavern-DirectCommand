@@ -1,0 +1,35 @@
+.enerccio_directcommand_container {
+    background-color: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    padding: 10px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.enerccio_directcommand_field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.enerccio_directcommand_label {
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+.enerccio_directcommand_textarea {
+    width: 100%;
+    resize: vertical;
+    background-color: var(--black30a);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    color: var(--SmartThemeBodyColor);
+    padding: 5px;
+}
+
+.enerccio_directcommand_save {
+    align-self: flex-end;
+}
