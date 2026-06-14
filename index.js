@@ -2,6 +2,8 @@ import {event_types, eventSource} from "../../../events.js";
 import {getChatMetadata, getData, getMessageDiv, setChatMetadata, setData} from "./utils.js";
 import {MODULE_NAME, EXTENSION_PATH} from "./conf.js";
 import {renderExtensionTemplateAsync} from "../../../extensions.js";
+import {SlashCommandParser} from "../../../slash-commands/SlashCommandParser.js";
+import {SlashCommand} from "../../../slash-commands/SlashCommand.js";
 
 class DirectCommand {
 
@@ -53,6 +55,59 @@ class DirectCommandManager {
     }
 
     async wire() {
+        // Register slash command safely if it hasn't been added yet
+        if (typeof SlashCommandParser !== 'undefined' && SlashCommandParser.addCommandObject) {
+            if (!SlashCommandParser.commands['enerccio-dc-export']) {
+                SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+                    name: 'enerccio-dc-export',
+                    callback: () => {
+                        const context = SillyTavern.getContext();
+                        if (!context.chat || context.chat.length === 0) {
+                            return "No chat history found to export.";
+                        }
+
+                        let resultText = "";
+                        let counter = 1;
+
+                        for (let i = 0; i < context.chat.length; i++) {
+                            const msg = context.chat[i];
+                            if (msg && msg.is_user) {
+                                const command = this._getDirectCommand(msg);
+
+                                resultText += `=== USER TURN #${counter} ===\n`;
+                                if (command && command.prefix && command.prefix.trim()) {
+                                    resultText += `PRE: ${command.prefix.trim()}\n`;
+                                }
+                                resultText += `QUERY: ${(msg.mes || "").trim()}\n`;
+                                if (command && command.postfix && command.postfix.trim()) {
+                                    resultText += `POST: ${command.postfix.trim()}\n`;
+                                }
+                                resultText += `\n`;
+                                counter++;
+                            }
+                        }
+
+                        if (resultText.trim() === "") {
+                            return "No user messages found in this chat.";
+                        }
+
+                        // Copy compiled block automatically to system clipboard
+                        navigator.clipboard.writeText(resultText.trim())
+                            .then(() => {
+                                if (typeof toastr !== 'undefined') {
+                                    toastr.success("DirectCommand history copied to clipboard!");
+                                }
+                            })
+                            .catch(err => console.error("Export clipboard failure:", err));
+
+                        return resultText;
+                    },
+                    returns: 'A copy-pasteable plaintext block of user prompt histories with active pre/post directives.',
+                    helpString: 'Extracts chronological user chat parameters along with attached Direct Command prefixes and postfixes for easy context rewrites.'
+                }));
+            }
+        }
+
         if ($(`#${MODULE_NAME}_editCurrentPrompt`).length > 0) return;
 
         this._updateButtonState();
