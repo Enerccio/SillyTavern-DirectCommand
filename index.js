@@ -1,6 +1,6 @@
 import {event_types, eventSource} from "../../../events.js";
 import {getChatMetadata, getData, getMessageDiv, setChatMetadata, setData} from "./utils.js";
-import {MODULE_NAME, EXTENSION_PATH} from "./conf.js";
+import {EXTENSION_PATH, MODULE_NAME} from "./conf.js";
 import {renderExtensionTemplateAsync} from "../../../extensions.js";
 import {SlashCommandParser} from "../../../slash-commands/SlashCommandParser.js";
 import {SlashCommand} from "../../../slash-commands/SlashCommand.js";
@@ -126,6 +126,7 @@ class DirectCommandManager {
                     const post = $popup.find(`.${MODULE_NAME}_append`).val();
                     this._saveCurrentPrompt(pre, post);
                     $popup.remove();
+                    $('#send_textarea').off('input.directcommand');
                 }
             }
         });
@@ -144,13 +145,13 @@ class DirectCommandManager {
             this.appendCurrentPrompt = true;
             this._updateButtonState();
             $popup.remove();
+            $('#send_textarea').off('input.directcommand');
             if (this.$openButton) {
                 this.$openButton.data('popup', null);
             }
         }
 
         if (this.appendCurrentPrompt && index === context.chat.length - 1) {
-            // new submitted message, bind prompt to it if it was edited
             this._setDirectCommand(message, this.currentPrompt);
             this.appendCurrentPrompt = false;
             this.currentPrompt = new DirectCommand();
@@ -196,6 +197,7 @@ class DirectCommandManager {
     async onChatRefresh() {
         $(`.${MODULE_NAME}_container`).remove();
         $(`.${MODULE_NAME}_confirm_container`).remove();
+        $('#send_textarea').off('input.directcommand');
 
         const currentPrompt = getChatMetadata(DirectCommandManager.PROMPT_COMMAND, true);
         if (currentPrompt) {
@@ -217,22 +219,17 @@ class DirectCommandManager {
         const context = SillyTavern.getContext();
         if (!context.chat || context.chat.length === 0) return;
 
-        // 1. Find the latest core message (user or assistant) in the outgoing prompt payload
         let lastCoreDataMessage = null;
         for (let i = data.chat.length - 1; i >= 0; i--) {
             const role = data.chat[i]?.role;
-            // Explicitly ignore 'tool' and 'system' payload layers
             if (role === 'user' || role === 'assistant') {
                 lastCoreDataMessage = data.chat[i];
                 break;
             }
         }
 
-        // If the last core turn isn't a user message, it's a continuation or multi-bot response. Skip it.
         if (!lastCoreDataMessage || lastCoreDataMessage.role !== 'user') return;
 
-        // 2. Find the core conversation messages at the tail end of full chat history
-        // We skip system messages and tool entries to get a clean user/assistant timeline.
         let coreContextMessages = [];
         for (let j = context.chat.length - 1; j >= 0; j--) {
             const m = context.chat[j];
@@ -243,7 +240,6 @@ class DirectCommandManager {
 
             if (!isSystem && !isTool) {
                 coreContextMessages.push(m);
-                // We only need the last two core messages to evaluate Normal Send vs Swipe
                 if (coreContextMessages.length >= 2) break;
             }
         }
@@ -254,11 +250,8 @@ class DirectCommandManager {
         const latestContextMessage = coreContextMessages[0];
 
         if (latestContextMessage.is_user === true) {
-            // Case A: Normal Send. The user message is at the active edge of the conversation.
             targetUserMessage = latestContextMessage;
         } else {
-            // Case B: Swipe. The core timeline ends with the AI turn being regenerated.
-            // The user message that triggered it sits directly behind it.
             if (coreContextMessages.length >= 2) {
                 const penultimateContextMessage = coreContextMessages[1];
                 if (penultimateContextMessage && penultimateContextMessage.is_user === true) {
@@ -267,7 +260,6 @@ class DirectCommandManager {
             }
         }
 
-        // 3. Inject the command strictly into the current outgoing user turn payload
         if (targetUserMessage) {
             const prompt = this._getDirectCommand(targetUserMessage);
             if (prompt) {
@@ -287,14 +279,17 @@ class DirectCommandManager {
                         this._saveCurrentPrompt(pre, post);
                         existingPopup.remove();
                         this.$openButton.data('popup', null);
+                        $('#send_textarea').off('input.directcommand');
                     } else if (action === 'discard') {
                         existingPopup.remove();
                         this.$openButton.data('popup', null);
+                        $('#send_textarea').off('input.directcommand');
                     }
                 });
             } else {
                 existingPopup.remove();
                 this.$openButton.data('popup', null);
+                $('#send_textarea').off('input.directcommand');
             }
             return;
         }
@@ -306,8 +301,39 @@ class DirectCommandManager {
 
         const prefixArea = $template.find(`.${MODULE_NAME}_prepend`);
         const postfixArea = $template.find(`.${MODULE_NAME}_append`);
+        const mainArea = $template.find(`.${MODULE_NAME}_main`);
+
         prefixArea.val(this.currentPrompt.prefix || "");
         postfixArea.val(this.currentPrompt.postfix || "");
+
+        // Show the main container & seed it with the current text input value
+        $template.find(`.${MODULE_NAME}_main_container`).show();
+        mainArea.val($('#send_textarea').val() || "");
+
+        // 1. Outbound Sync: Typing inside popup updates SillyTavern text box
+        mainArea.on('input propertychange', function() {
+            $('#send_textarea').val($(this).val()).trigger('input');
+        });
+
+        // 2. Inbound Sync: Typing inside SillyTavern text box updates popup
+        $('#send_textarea').on('input.directcommand', function() {
+            mainArea.val($(this).val());
+        });
+
+        // 3. Send Interceptor: Enter key submits prompt directly
+        mainArea.on('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                $('#send_textarea').val(mainArea.val()).trigger('input');
+                const pre = prefixArea.val();
+                const post = postfixArea.val();
+                this._saveCurrentPrompt(pre, post);
+                $template.remove();
+                this.$openButton.data('popup', null);
+                $('#send_textarea').off('input.directcommand');
+                this.$sendButton.trigger('click');
+            }
+        });
 
         $template.find(`.${MODULE_NAME}_save`).on('click', () => {
             const pre = prefixArea.val();
@@ -315,6 +341,7 @@ class DirectCommandManager {
             this._saveCurrentPrompt(pre, post);
             $template.remove();
             this.$openButton.data('popup', null);
+            $('#send_textarea').off('input.directcommand');
         });
 
         $template.find(`.${MODULE_NAME}_close`).on('click', () => {
@@ -326,14 +353,17 @@ class DirectCommandManager {
                         this._saveCurrentPrompt(pre, post);
                         $template.remove();
                         this.$openButton.data('popup', null);
+                        $('#send_textarea').off('input.directcommand');
                     } else if (action === 'discard') {
                         $template.remove();
                         this.$openButton.data('popup', null);
+                        $('#send_textarea').off('input.directcommand');
                     }
                 });
             } else {
                 $template.remove();
                 this.$openButton.data('popup', null);
+                $('#send_textarea').off('input.directcommand');
             }
         });
 
@@ -384,6 +414,9 @@ class DirectCommandManager {
 
         const $template = await this._loadTemplate();
 
+        // Hide the main prompt area when modifying a historical turn
+        $template.find(`.${MODULE_NAME}_main_container`).hide();
+
         const prefixArea = $template.find(`.${MODULE_NAME}_prepend`);
         const postfixArea = $template.find(`.${MODULE_NAME}_append`);
         prefixArea.val(prompt.prefix || "");
@@ -417,17 +450,14 @@ class DirectCommandManager {
             }
         });
 
-        // --- Dynamic Alignment to $chat Boundaries ---
         const chatLeft = this.$chat.offset().left;
         const chatWidth = this.$chat.outerWidth();
         const btnTop = $button.offset().top;
         const btnHeight = $button.outerHeight();
 
-        // Force the popup to perfectly align flush with the main chat stream window
         const finalLeft = chatLeft;
         const finalWidth = chatWidth;
 
-        // 1. Stage the component invisibly to compute accurate textwrapping heights
         $template.css({
             position: 'fixed',
             left: `${finalLeft}px`,
@@ -439,22 +469,17 @@ class DirectCommandManager {
         $button.data('popup', $template);
         $('body').append($template);
 
-        // 2. Measure actual computed bounding box height
         const popupHeight = $template.outerHeight();
         const windowHeight = window.innerHeight;
         const spaceBelow = windowHeight - (btnTop + btnHeight);
 
-        // 3. Compute Vertical Trajectory relative to the clicked button icon
         let finalTop;
         if (spaceBelow < popupHeight && btnTop >= popupHeight) {
-            // VERTICAL FLIP: Open upwards if there's no room below
             finalTop = btnTop - popupHeight;
         } else {
-            // Normal Trajectory: Open downwards directly underneath the name line
             finalTop = btnTop + btnHeight;
         }
 
-        // 4. Snap coordinates and reveal panel seamlessly
         $template.css({
             top: `${finalTop}px`,
             visibility: 'visible'
@@ -542,10 +567,9 @@ class DirectCommandManager {
     _updateButtonState() {
         if (!this.$openButton) return;
         if (this.currentPrompt.prefix || this.currentPrompt.postfix) {
-            // Uses SillyTavern's active theme accent color for quote highlights with a emerald fallback
             this.$openButton.css('color', 'var(--SmartThemeQuoteColor, #00bc8c)');
         } else {
-            this.$openButton.css('color', ''); // Revert to default theme icon color
+            this.$openButton.css('color', '');
         }
     }
 }
