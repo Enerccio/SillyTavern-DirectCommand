@@ -590,7 +590,7 @@ $(async function () {
     eventSource.on(event_types.USER_MESSAGE_RENDERED, async (messageId) => {
         await manager.storeDirectCommand(messageId);
     });
-    for (let event of [event_types.CHAT_LOADED]) {
+    for (let event of [event_types.CHAT_LOADED, event_types.CHAT_CHANGED]) {
         eventSource.on(event, async () => {
             await manager.onChatRefresh();
         });
